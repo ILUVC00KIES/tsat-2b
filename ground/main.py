@@ -125,6 +125,11 @@ pressure_anim = create_plot("Pressure", "pa", "pressure", 0, 1)
 alt_anim = create_plot("Altitude", "m", "altitude", 0, 2)
 accel_anim = create_plot("Acceleration", "m/s/s", "acceleration_magnitude", 1, 0)
 vel_anim = create_plot("Ascent Velocity", "m/s", "velocity", 1, 1)
+img_ax = axs[1, 2]
+with open("ksc.png", "rb") as f:
+    image = plt.imread(f)
+img_ax.imshow(image)
+img_ax.axis("off")
 
 parser = argparse.ArgumentParser(
     description = "TSAT-2B Communications"
