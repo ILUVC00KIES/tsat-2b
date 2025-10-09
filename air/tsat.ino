@@ -22,6 +22,11 @@ typedef struct {
 typedef struct {
   uint32_t frame_count;
   uint32_t time;
+  // These values are fixed-point with 3 decimals.
+  // Ideally they would be floating point, but floating point
+  // representation is very weird (undefined?) across platorms.
+  // This might not be entirely necessary, but it's good to make sure.
+  // Telemetry doesn't need to be 100% accurate anyways.
   uint32_t altitude; 
   uint32_t pressure; 
   uint32_t temperature;
@@ -31,6 +36,7 @@ typedef struct {
 
 // Ping packet
 typedef struct {
+  // Counter that we sent back to identify which ping it is
   uint32_t counter;
 } PacketPing;
 
@@ -50,10 +56,18 @@ typedef struct {
 
 static TaskHandle_t communcation_rx_handle;
 
+// TODO: Replace this with actual functions
+// that read/write to the communications module.
 void read_bytes(int* buffer, int size);
 void write_bytes(int* buffer, int size);
 
-bool recieve_packet(Packet* packet) {
+// Receives a packet from the communications module.
+// Parameters:
+//   - packet: A pointer to the struct of which
+//       the packet is written to.
+// Returns:
+//    - whether receiving the packet was successful.
+bool receive_packet(Packet* packet) {
   // Read the initial fixed-size packet meta
   read_bytes((int*)packet, sizeof(PacketMeta));
 
@@ -62,7 +76,7 @@ bool recieve_packet(Packet* packet) {
   int size;
   switch (packet->meta.message_type) {
     case PACKET_PING:
-      size = sizeof(PacketPing);z
+      size = sizeof(PacketPing);
       break;
     case PACKET_TELEMETRY:
       size = sizeof(PacketTelemetry);
@@ -78,11 +92,17 @@ bool recieve_packet(Packet* packet) {
   return true;
 }
 
+// Converts a datapoint into a telemetry packet.
+// Parameters:
+//   - data: A pointer to the datapoint we are converting.
+//   - (optional) previous: A pointer to the previous datapoint. 
+// Returns:
+//    - A telemetry packet which can be sent.
 Packet datapoint_to_telemetry(DataPoint* data, DataPoint* previous) {
   // Magnitude of 3d vector (search it up)
   double accel_mag = sqrt(sq(data->accel[0]) + sq(data->accel[1]) + sq(data->accel[2]));
 
-  // Velocity = delta x / time
+  // Velocity = dx / dt
   // If we don't have a previous datapoint, default to 0
   double velocity = previous ? (data->altitude - previous->altitude) / (data->time - previous->time) : 0;
 
@@ -90,10 +110,7 @@ Packet datapoint_to_telemetry(DataPoint* data, DataPoint* previous) {
   packet.meta = { SATELLITE_ID, PACKET_TELEMETRY };
   packet.data.telemetry = { 
     data->index,
-    // These 6 should really be floating-point, but floating-point
-    // representation is basically very hard (undefined?) across platforms
-    // so we just send as fixed point with 3 decimals
-    // While it might not be necessary, it guarantees things won't break
+    // Floating-point to fixed-point 3 decimals. See above for rationale.
     data->time * 1000,
     data->altitude * 1000,
     data->pressure * 1000,
@@ -105,21 +122,23 @@ Packet datapoint_to_telemetry(DataPoint* data, DataPoint* previous) {
   return packet;
 }
 
+// Handles receiving a ping packet.
 void handle_ping_packet(Packet* packet) {
-  // Send back the same packet that recieved.
+  // Send back the same packet that received.
   write_bytes((int*)(packet), sizeof(PacketMeta) + sizeof(PacketPing));
 }
 
+// The main loop for receiving packets.
 void communication_rx(void* _) {
   while (1) {
     Packet packet;
-    bool success = recieve_packet(&packet);
+    bool success = receive_packet(&packet);
 
     switch (packet.meta.message_type) {
       case PACKET_PING:
         handle_ping_packet(&packet);
         break;
-      // We never should recieve a telemetry packet.
+      // We never should receive a telemetry packet.
       // If we do then just ignore it.
     }
   }
