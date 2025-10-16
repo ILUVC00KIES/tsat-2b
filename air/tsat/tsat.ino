@@ -1,7 +1,32 @@
+#include <RFM69.h>
+#include <RFM69_ATC.h>
+#include <SPIFlash.h>
+#include <SPI.h>
+
+// -----[ Network Config ]-----
+#define NODEID 99
+#define GATEWAYID 1
+#define NETWORKID 100
+#define FREQUENCY RF69_433MHZ
+#define ENCRYPTKEY "TSAT-2B/25"
+
+// Auto Transmission Control
+// Saves power
+#define ENABLE_ATC
+
+// -----[ Constants ]-----
+
 #define PACKET_PING 1
 #define PACKET_TELEMETRY 2
 
 #define SATELLITE_ID 1
+
+// -----[ Statics ]-----
+#ifdef ENABLE_ATC
+  RFM69_ATC radio;
+#else
+  RFM69 radio;
+#endif
 
 // -----[ Networking ]-----
 // Packets are sent as raw bytes.
@@ -10,8 +35,8 @@
 // It also makes it very lightweight (not that it matters)
 
 typedef struct {
-  int index;
-  double time; // seconds
+  unsigned int index;
+  unsigned long time; // milliseconds
   double temperature; // celsius
   double pressure; // pa
   double altitude; // m
@@ -20,7 +45,7 @@ typedef struct {
 
 // Telemetry Packet
 typedef struct {
-  uint32_t frame_count;
+  uint32_t index;
   uint32_t time;
   // These values are fixed-point with 3 decimals.
   // Ideally they would be floating point, but floating point
@@ -56,11 +81,6 @@ typedef struct {
 
 static TaskHandle_t communcation_rx_handle;
 
-// TODO: Replace this with actual functions
-// that read/write to the communications module.
-void read_bytes(int* buffer, int size);
-void write_bytes(int* buffer, int size);
-
 // Receives a packet from the communications module.
 // Parameters:
 //   - packet: A pointer to the struct of which
@@ -68,8 +88,15 @@ void write_bytes(int* buffer, int size);
 // Returns:
 //    - whether receiving the packet was successful.
 bool receive_packet(Packet* packet) {
-  // Read the initial fixed-size packet meta
-  read_bytes((int*)packet, sizeof(PacketMeta));
+  if (!radio.receiveDone())  {
+    return false;
+  }
+  if (radio.DATALEN < sizeof(PacketMeta)) {
+    return false;
+  }
+
+  // Read in packet header
+  memcpy(packet, radio.DATA, sizeof(PacketMeta));
 
   // Depending on which packet type we received, we
   // have to read a different amount of bytes.
@@ -87,7 +114,7 @@ bool receive_packet(Packet* packet) {
   }
 
   // Read in the actual packet data into the data portion.
-  read_bytes((int*)(&packet->data), size);
+  memcpy(&packet->data, radio.DATA, size);
 
   return true;
 }
@@ -110,8 +137,8 @@ Packet datapoint_to_telemetry(DataPoint* data, DataPoint* previous) {
   packet.meta = { SATELLITE_ID, PACKET_TELEMETRY };
   packet.data.telemetry = { 
     data->index,
+    data->time,
     // Floating-point to fixed-point 3 decimals. See above for rationale.
-    data->time * 1000,
     data->altitude * 1000,
     data->pressure * 1000,
     data->temperature * 1000,
@@ -125,7 +152,7 @@ Packet datapoint_to_telemetry(DataPoint* data, DataPoint* previous) {
 // Handles receiving a ping packet.
 void handle_ping_packet(Packet* packet) {
   // Send back the same packet that received.
-  write_bytes((int*)(packet), sizeof(PacketMeta) + sizeof(PacketPing));
+  radio.send(GATEWAYID, packet, sizeof(PacketMeta) + sizeof(PacketPing));
 }
 
 // The main loop for receiving packets.
@@ -141,12 +168,17 @@ void communication_rx(void* _) {
       // We never should receive a telemetry packet.
       // If we do then just ignore it.
     }
+
+    vTaskDelay(200 / portTICK_PERIOD_MS);
   }
 }
 
 void setup() {
+  radio.initialize(FREQUENCY, NODEID, NETWORKID);
+  radio.setHighPower(); // needed for RFM69HCW
+  radio.encrypt(ENCRYPTKEY);
   // put your setup code here, to run once:
-  /*xTaskCreatePinnedToCore(
+  xTaskCreatePinnedToCore(
     communication_rx,
     "communication_rx",
     3000,
@@ -154,7 +186,7 @@ void setup() {
     10,
     &communcation_rx_handle,
     0
-  );*/
+  );
 }
 
 void loop() {
