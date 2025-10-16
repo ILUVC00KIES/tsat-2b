@@ -1,7 +1,7 @@
 #include <RFM69.h>
 #include <RFM69_ATC.h>
-#include <SPIFlash.h>
-#include <SPI.h>
+#include "Adafruit_BMP3XX.h"
+#include "Adafruit_MMA8451.h"
 
 // -----[ Network Config ]-----
 #define NODEID 99
@@ -14,6 +14,10 @@
 // Saves power
 #define ENABLE_ATC
 
+// -----[ Sensor Config ]-----
+
+#define SEALEVELPRESSURE_HPA (1013.25)
+
 // -----[ Constants ]-----
 
 #define PACKET_PING 1
@@ -21,18 +25,7 @@
 
 #define SATELLITE_ID 1
 
-// -----[ Statics ]-----
-#ifdef ENABLE_ATC
-  RFM69_ATC radio;
-#else
-  RFM69 radio;
-#endif
-
-// -----[ Networking ]-----
-// Packets are sent as raw bytes.
-// While this makes things a little more complicated on the receiving end,
-// It means we need basically no code for serialization/deserialization
-// It also makes it very lightweight (not that it matters)
+// -----[ Types ]-----
 
 typedef struct {
   unsigned int index;
@@ -42,6 +35,25 @@ typedef struct {
   double altitude; // m
   float accel[3]; // m/s/s
 } DataPoint;
+
+// -----[ Statics ]-----
+
+#ifdef ENABLE_ATC
+  RFM69_ATC radio;
+#else
+  RFM69 radio;
+#endif
+Adafruit_BMP3XX bmp;
+Adafruit_MMA8451 mma = Adafruit_MMA8451();
+
+unsigned int datapoint_count = 0;
+DataPoint previous_datapoint;
+
+// -----[ Networking ]-----
+// Packets are sent as raw bytes.
+// While this makes things a little more complicated on the receiving end,
+// It means we need basically no code for serialization/deserialization
+// It also makes it very lightweight (not that it matters)
 
 // Telemetry Packet
 typedef struct {
@@ -79,7 +91,8 @@ typedef struct {
   } data;
 } Packet;
 
-static TaskHandle_t communcation_rx_handle;
+static TaskHandle_t communication_rx_handle;
+static TaskHandle_t communication_tx_handle;
 
 // Receives a packet from the communications module.
 // Parameters:
@@ -173,10 +186,67 @@ void communication_rx(void* _) {
   }
 }
 
+void communication_tx(void* _) {
+  bool previous = false;
+  while (1) {
+    DataPoint dp;
+    bool success = capture_data(&dp);
+    if (success) {
+      Packet packet = datapoint_to_telemetry(&dp, previous ? &previous_datapoint : NULL);
+      previous = true;
+      previous_datapoint = dp;
+      radio.send(GATEWAYID, &packet, sizeof(PacketMeta) + sizeof(PacketTelemetry));
+    }
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+}
+
+// -----[ Sensor Data ]-----
+
+bool capture_data(DataPoint* dp) {
+  if (!bmp.performReading()) {
+    return false;
+  }
+  mma.read();
+
+  unsigned int count = datapoint_count;
+  datapoint_count++;
+
+  dp->index = count;
+  dp->time = millis();
+  dp->temperature = bmp.temperature;
+  dp->pressure = bmp.pressure;
+  dp->altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
+  dp->accel[0] = mma.x;
+  dp->accel[1] = mma.y;
+  dp->accel[2] = mma.z;
+
+  return true;
+}
+
+// -----[ Initialization ]-----
+
 void setup() {
   radio.initialize(FREQUENCY, NODEID, NETWORKID);
   radio.setHighPower(); // needed for RFM69HCW
   radio.encrypt(ENCRYPTKEY);
+
+  if (!bmp.begin_I2C()) {
+    while(1);
+  };
+
+  // Set up oversampling and filter initialization
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_4X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_3);
+  bmp.setOutputDataRate(BMP3_ODR_50_HZ);
+
+  if (!mma.begin()) {
+    while(1);
+  };
+  mma.setRange(MMA8451_RANGE_2_G);
+
   // put your setup code here, to run once:
   xTaskCreatePinnedToCore(
     communication_rx,
@@ -184,7 +254,17 @@ void setup() {
     3000,
     NULL,
     10,
-    &communcation_rx_handle,
+    &communication_rx_handle,
+    0
+  );
+
+  xTaskCreatePinnedToCore(
+    communication_tx,
+    "communication_tx",
+    3000,
+    NULL,
+    5,
+    &communication_tx_handle,
     0
   );
 }
