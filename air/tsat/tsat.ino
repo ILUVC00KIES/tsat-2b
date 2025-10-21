@@ -126,6 +126,11 @@ bool receive_packet(Packet* packet) {
       return false;
   }
 
+  // Check to make sure the rest of the data is there too
+  if (radio.DATALEN - sizeof(PacketMeta) < size) {
+    return false;
+  }
+
   // Read in the actual packet data into the data portion.
   memcpy(&packet->data, radio.DATA, size);
 
@@ -210,10 +215,7 @@ bool capture_data(DataPoint* dp) {
   }
   mma.read();
 
-  unsigned int count = datapoint_count;
-  datapoint_count++;
-
-  dp->index = count;
+  dp->index = datapoint_count++;
   dp->time = millis();
   dp->temperature = bmp.temperature;
   dp->pressure = bmp.pressure;

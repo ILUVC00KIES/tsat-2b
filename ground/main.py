@@ -156,7 +156,8 @@ def run():
         # Simple code to read every packet.
         # Eventually we need to do
         # reading and writing simultaneously
-        #line = ser.readline()
+        #raw = ser.readline()
+        #line = bytes([int(i) for i in raw.split(' ')])
         #packet = deserialize_packet(line)
         #print("Got packet!", packet)
         #if packet.meta.packet_type == PacketType.TELEMETRY:
